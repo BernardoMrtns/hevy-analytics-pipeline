@@ -135,54 +135,35 @@ def processar_progressao(exercise_title, peso_atual, reps_feitas, dias_sem_trein
     """Aplica as regras biológicas do Top Set e calcula o Back-Off."""
     config = get_equipment_config(exercise_title)
     
-    # Cálculo de Estimação de 1RM (Fórmula de Epley)
+    # Cálculo de Estimação de 1RM apenas para fins de registro e gráficos
     one_rm = np.float64(peso_atual) * (1 + (np.float64(reps_feitas) / 30.0))
 
     motivo = ""
 
-    prep_a_pct = 0.45   # faixa 40-50%
-    prep_b_pct = 0.70   # fixo 70%
-    top_pct = 0.825     # faixa 80-85%
-    backoff_pct = 0.625 # faixa 60-65%
-    fator_deload = 1.0
-
-    # Regra de segurança para hiato longo sem treino
+    # Motor de tomada de decisão: A progressão incide sobre o PESO ATUAL, não sobre a 1RM.
     if dias_sem_treino > 10:
-        top_pct = 0.80
-        backoff_pct = 0.60
-        prep_a_pct = 0.40
-        fator_deload = 0.90
-        motivo = "Destreino (>10 dias): usar banda inferior + deload de 10%"
-    # Se houver plato (3 semanas iguais), nao forcamos progressao de carga
+        peso_teorico_top = peso_atual * 0.90
+        motivo = "Destreino (>10 dias): Deload preventivo de 10%"
     elif plateau:
-        top_pct = 0.80
-        backoff_pct = 0.60
-        fator_deload = 0.95 # <-- ADICIONAR: Reduz a carga base em 5% para quebrar o platô nas próximas sessões
+        peso_teorico_top = peso_atual * 0.95
         motivo = "Platô detectado (3 semanas): Quebra de carga (Deload 5%)"
-    
-    # Motor de tomada de decisão baseado no teto de repetições (5-9 reps)
     elif reps_feitas >= 9:
-        top_pct = 0.85
-        backoff_pct = 0.65
-        prep_a_pct = 0.50
-        motivo = "Meta batida (>=9 reps): usar banda superior de intensidade"
+        peso_teorico_top = peso_atual * 1.05
+        motivo = "Meta batida (>=9 reps): Aumento de carga (~5%)"
     elif reps_feitas >= 5:
-        top_pct = 0.825
-        backoff_pct = 0.625
-        prep_a_pct = 0.45
-        motivo = "Faixa alvo parcial (5-8 reps): manter banda intermediaria"
+        peso_teorico_top = peso_atual
+        motivo = "Faixa alvo parcial (5-8 reps): Manter carga e progredir reps"
     else:
-        top_pct = 0.80
-        backoff_pct = 0.60
-        prep_a_pct = 0.40
-        fator_deload = 0.90
-        motivo = "Abaixo da faixa (<5 reps): banda inferior + deload de 10%"
+        peso_teorico_top = peso_atual * 0.90
+        motivo = "Abaixo da faixa (<5 reps): Deload técnico de 10%"
 
-    # Todas as series sao derivadas do 1RM estimado
-    prep_a = snap_weight(float(one_rm) * prep_a_pct * fator_deload, config)
-    prep_b = snap_weight(float(one_rm) * prep_b_pct * fator_deload, config)
-    novo_top_set = snap_weight(float(one_rm) * top_pct * fator_deload, config)
-    novo_back_off = snap_weight(float(one_rm) * backoff_pct * fator_deload, config)
+    # Aplica as restrições de maquinário (Snapping) no novo Top Set
+    novo_top_set = snap_weight(peso_teorico_top, config)
+    
+    # Todas as outras séries são âncoras percentuais diretas do Top Set validado
+    novo_back_off = snap_weight(novo_top_set * 0.77, config)  # ~23% de drop
+    prep_a = snap_weight(novo_top_set * 0.45, config)         # Aquecimento leve
+    prep_b = snap_weight(novo_top_set * 0.70, config)         # Aclimatação neural
     
     return {
         "1RM_Est": float(np.round(one_rm, 1)),
@@ -190,14 +171,8 @@ def processar_progressao(exercise_title, peso_atual, reps_feitas, dias_sem_trein
         "Prep_B": prep_b,
         "Top_Set": novo_top_set,
         "Back_Off": novo_back_off,
-        "Motivo": motivo,
-        "Perc_Prep_A": prep_a_pct,
-        "Perc_Prep_B": prep_b_pct,
-        "Perc_Top": top_pct,
-        "Perc_Back_Off": backoff_pct,
-        "Fator_Deload": fator_deload,
+        "Motivo": motivo
     }
-
 
 def extrair_workouts(payload):
     """Normaliza diferentes formatos de resposta da Hevy para uma lista de workouts."""
@@ -422,24 +397,6 @@ def enviar_notificacao_telegram(mensagem):
             "chat_id": TELEGRAM_CHAT_ID,
             "text": mensagem,
             "parse_mode": "HTML", # <-- ESSENCIAL: Ativa a formatação HTML no Telegram
-            "disable_web_page_preview": True,
-        },
-        timeout=20,
-    )
-    if response.status_code >= 400:
-        return False, response.text
-    return True, "ok"
-
-def enviar_notificacao_telegram(mensagem):
-    """Envia uma mensagem simples via Telegram Bot API."""
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False, "Telegram nao configurado"
-
-    response = requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-        json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": mensagem,
             "disable_web_page_preview": True,
         },
         timeout=20,
