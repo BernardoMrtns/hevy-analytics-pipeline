@@ -42,6 +42,28 @@ EQUIPMENT_CONFIG = {
 # ==========================================
 # FUNÇÕES DE ARREDONDAMENTO (SNAPPING)
 # ==========================================
+
+def get_equipment_config(title):
+    """Busca a configuração do equipamento de forma case-insensitive com fallback inteligente."""
+    title_lower = title.lower()
+    
+    # 1. Busca exata (ignorando maiúsculas/minúsculas)
+    for config_name, config_data in EQUIPMENT_CONFIG.items():
+        if config_name.lower() == title_lower:
+            return config_data
+            
+    # 2. Heurística por palavra-chave se for um exercício novo/variante
+    if any(kw in title_lower for kw in ["cabo", "polia", "corda", "triângulo", "triangulo", "pushdown", "francês", "frances"]):
+        return {"type": "cable", "tara": 0.0}
+    if any(kw in title_lower for kw in ["halter", "dumbbell", "alternada", "martelo"]):
+        return {"type": "dumbbell", "tara": 0.0}
+    if any(kw in title_lower for kw in ["barra", "barbell", "romeno"]):
+        return {"type": "barbell", "tara": 20.0}
+    if any(kw in title_lower for kw in ["máquina", "maquina", "voador", "seletorizada", "pino"]):
+        return {"type": "machine_pin", "tara": 0.0}
+        
+    return {"type": "standard", "tara": 0.0}
+
 def snap_weight(target_weight, config):
     """Aplica as restrições físicas do maquinário sobre a carga teórica."""
     eq_type = config["type"]
@@ -111,7 +133,7 @@ def get_top_set_normal(exercise):
 # ==========================================
 def processar_progressao(exercise_title, peso_atual, reps_feitas, dias_sem_treino, plateau):
     """Aplica as regras biológicas do Top Set e calcula o Back-Off."""
-    config = EQUIPMENT_CONFIG.get(exercise_title, {"type": "standard", "tara": 0.0})
+    config = get_equipment_config(exercise_title)
     
     # Cálculo de Estimação de 1RM (Fórmula de Epley)
     one_rm = np.float64(peso_atual) * (1 + (np.float64(reps_feitas) / 30.0))
@@ -135,7 +157,8 @@ def processar_progressao(exercise_title, peso_atual, reps_feitas, dias_sem_trein
     elif plateau:
         top_pct = 0.80
         backoff_pct = 0.60
-        motivo = "Plato detectado (3 semanas): banda inferior e sugerir variacao"
+        fator_deload = 0.95 # <-- ADICIONAR: Reduz a carga base em 5% para quebrar o platô nas próximas sessões
+        motivo = "Platô detectado (3 semanas): Quebra de carga (Deload 5%)"
     
     # Motor de tomada de decisão baseado no teto de repetições (5-9 reps)
     elif reps_feitas >= 9:
@@ -326,26 +349,86 @@ def atualizar_workout(workout_id, payload, headers):
 
 
 def montar_mensagem_telegram(workout, alteracoes, recomendacoes):
-    """Monta um resumo compacto das cargas calculadas para envio ao Telegram."""
-    linhas = []
-    titulo = workout.get("title") or "Workout sem titulo"
-    data_inicio = (workout.get("start_time") or "")[:10] or "sem data"
-    agora_str = datetime.now().strftime("%d/%m/%Y %H:%M")
-    linhas.append(f"[{agora_str}] Hevy Weight Adjust")
-    linhas.append(f"Hevy atualizado: {titulo} ({data_inicio})")
-    linhas.append(f"Alterações aplicadas: {alteracoes}")
-    if alteracoes == 0:
-        linhas.append("Nenhuma carga precisou ser alterada neste run.")
+    titulo = workout.get("title") or "Treino sem título"
+    data_inicio = (workout.get("start_time") or "")[:10]
 
-    for exercise_title in sorted(recomendacoes.keys()):
-        rec = recomendacoes[exercise_title]
-        linhas.append(
-            f"- {exercise_title}: Top {formatar_peso(rec['Top_Set'])} kg | Back-Off {formatar_peso(rec['Back_Off'])} kg | Prep A {formatar_peso(rec['Prep_A'])} kg | Prep B {formatar_peso(rec['Prep_B'])} kg"
-        )
+    try:
+        dt = datetime.fromisoformat(data_inicio.replace("Z", "+00:00"))
+        data_formatada = dt.strftime("%d/%m/%Y")
+    except Exception:
+        data_formatada = data_inicio or "Sem data"
 
-    mensagem = "\n".join(linhas)
-    return mensagem[:3900]
+    linhas = [
+        "🏋️ HEVY WEIGHT PIPELINE",
+        f"📝 {titulo}",
+        f"📅 {data_formatada}",
+    ]
 
+    if alteracoes > 0:
+        linhas.append(f"⚙️ {alteracoes} ajustes aplicados")
+    else:
+        linhas.append("✅ Nenhum ajuste necessário")
+
+    linhas.append("")
+    linhas.append("📊 Próxima sessão")
+    linhas.append("")
+
+    exercicios = [
+        ex.get("title")
+        for ex in workout.get("exercises", [])
+        if ex.get("title")
+    ]
+
+    for exercise_title in exercicios:
+        rec = recomendacoes.get(exercise_title)
+
+        if not rec:
+            continue
+
+        motivo = rec.get("Motivo", "")
+
+        if "Meta batida" in motivo:
+            status = "🔥"
+        elif "Platô" in motivo or "Plato" in motivo:
+            status = "⚠️"
+        elif "Destreino" in motivo:
+            status = "📉"
+        elif "Abaixo da faixa" in motivo:
+            status = "🔄"
+        else:
+            status = "➡️"
+
+        linhas.extend([
+            f"{status} {exercise_title}",
+            (
+                f"Top {formatar_peso(rec['Top_Set'])}kg | "
+                f"Back {formatar_peso(rec['Back_Off'])}kg | "
+                f"Warm {formatar_peso(rec['Prep_A'])}kg→{formatar_peso(rec['Prep_B'])}kg"
+            ),
+            f"{motivo}",
+            ""
+        ])
+
+    return "\n".join(linhas)[:4000]
+
+def enviar_notificacao_telegram(mensagem):
+    """Envia uma mensagem formatada via Telegram Bot API."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False, "Telegram não configurado"
+
+    response = requests.post(
+        f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+        json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": mensagem,
+            "parse_mode": "HTML", # <-- ESSENCIAL: Ativa a formatação HTML no Telegram
+            "disable_web_page_preview": True,
+        },
+        timeout=20,
+    )
+    if response.status_code >= 400:
+        return False, response.text
+    return True, "ok"
 
 def enviar_notificacao_telegram(mensagem):
     """Envia uma mensagem simples via Telegram Bot API."""
