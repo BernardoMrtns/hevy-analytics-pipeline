@@ -53,6 +53,7 @@ EQUIPMENT_CONFIG = {
     "Elevação Lateral (Halter)": {"type": "dumbbell", "tara": 0.0},
     "Rosca Martelo Alternada": {"type": "dumbbell", "tara": 0.0},
     "Remadas Dobradas (Halter)": {"type": "dumbbell", "tara": 0.0},
+    "Rosca Scott (Halter)": {"type": "dumbbell", "tara": 0.0},
     
     # Barras e Máquinas de Pino
     "Levantamento Terra Romeno (Barra)": {"type": "barbell", "tara": 20.0},
